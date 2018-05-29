@@ -7,9 +7,9 @@ cd $(dirname $0)
 LC_ALL="en_US.UTF-8"
 LC_CTYPE="en_US.UTF-8"
 export PGCLIENTENCODING=UTF8
-export LD_LIBRARY_PATH=/usr/local/pgsql/lib:$LD_LIBRARY_PATH
-export PATH=/usr/local/pgsql/bin:$PATH
-export PGDATA=$PWD/pgdata
+#export LD_LIBRARY_PATH=/usr/local/pgsql/lib:$LD_LIBRARY_PATH
+#export PATH=/usr/local/pgsql/bin:$PATH
+#export PGDATA=$PWD/pgdata
 export PGHOST=localhost
 export PGPORT=6667
 export EF_ALLOW_MALLOC_0=1
@@ -23,7 +23,7 @@ BOUNCER_EXE="../pgbouncer"
 
 LOGDIR=log
 NC_PORT=6668
-PG_PORT=6666
+PG_PORT=15432
 PG_LOG=$LOGDIR/pg.log
 
 pgctl() {
@@ -75,23 +75,33 @@ mkdir -p $LOGDIR
 rm -f $BOUNCER_LOG $PG_LOG
 rm -rf $PGDATA
 
-if [ ! -d $PGDATA ]; then
-	mkdir $PGDATA
-	initdb >> $PG_LOG 2>&1
-	sed $SED_ERE_OP -i "/unix_socket_director/s:.*(unix_socket_director.*=).*:\\1 '/tmp':" pgdata/postgresql.conf
-fi
+#TODO:start greenplum
+#sed $SED_ERE_OP -i "/unix_socket_director/s:.*(unix_socket_director.*=).*:\\1 '/tmp':" ${MASTER_DATA_DIRECTORY}/postgresql.conf
+gpstart -a
 
-pgctl start
+#if [ ! -d $PGDATA ]; then
+#	mkdir $PGDATA
+#	initdb >> $PG_LOG 2>&1
+#	sed $SED_ERE_OP -i "/unix_socket_director/s:.*(unix_socket_director.*=).*:\\1 '/tmp':" pgdata/postgresql.conf
+#fi
+
+#pgctl start
 sleep 5
 
 echo "Creating databases"
 psql -p $PG_PORT -l |grep p0 > /dev/null || {
-	psql -p $PG_PORT -c "create user bouncer" template1
 	createdb -p $PG_PORT p0
+}
+psql -p $PG_PORT -l |grep p1 > /dev/null || {
 	createdb -p $PG_PORT p1
-	createdb -p $PG_PORT p3
+}
+psql -p $PG_PORT -l |grep p2 > /dev/null || {
+	createdb -p $PG_PORT p2
 }
 
+psql -p $PG_PORT -d p0 -c "select * from pg_user" | grep bouncer > /dev/null || {
+	psql -p $PG_PORT -c "create user bouncer" template1
+}
 psql -p $PG_PORT -d p0 -c "select * from pg_user" | grep pswcheck > /dev/null || {
 	psql -p $PG_PORT p0 -c "create user pswcheck with superuser createdb password 'pgbouncer-check';" || return 1
 	psql -p $PG_PORT p0 -c "create user someuser with password 'anypasswd';" || return 1
@@ -145,7 +155,8 @@ fw_reset() {
 
 complete() {
 	test -f $BOUNCER_PID && kill `cat $BOUNCER_PID` >/dev/null 2>&1
-	pgctl -m fast stop
+	#pgctl -m fast stop
+	gpstop -a -M fast
 	rm -f $BOUNCER_PID
 }
 
@@ -156,7 +167,7 @@ die() {
 }
 
 admin() {
-	psql -h /tmp -U pgbouncer pgbouncer -c "$@;" || die "Cannot contact bouncer!"
+	psql -h /tmp -p 6667 -U pgbouncer pgbouncer -c "$@;" || die "Cannot contact bouncer!"
 }
 
 runtest() {
@@ -220,8 +231,8 @@ test_server_login_retry() {
 	admin "set query_timeout=10"
 	admin "set server_login_retry=1"
 
-	(pgctl -m fast stop; sleep 3; pgctl start) &
-	sleep 1
+	(gpstop -a -M fast; sleep 3; gpstart -a) &
+	sleep 20
 	psql -c "select now()" p0
 	rc=$?
 	wait
@@ -230,19 +241,19 @@ test_server_login_retry() {
 
 # server_connect_timeout - uses netcat to start dummy server
 test_server_connect_timeout_establish() {
-	which nc >/dev/null || return 1
+	which nc6 >/dev/null || return 1
 
-	echo nc $NC_WAIT_OP -l $NC_PORT
-	nc $NC_WAIT_OP -l $NC_PORT >/dev/null &
+	echo nc6 $NC_WAIT_OP -l -p $NC_PORT
+	nc6 $NC_WAIT_OP -l -p $NC_PORT >/dev/null &
 	sleep 2
 	admin "set query_timeout=3"
 	admin "set server_connect_timeout=2"
 	psql -c "select now()" p2
 	# client will always see query_timeout, need to grep for connect timeout
-	grep "closing because: connect failed" $BOUNCER_LOG
+	grep "closing because: connect timeout" $BOUNCER_LOG
 	rc=$?
 	# didnt seem to die otherwise
-	killall nc
+	pkill nc6
 	return $rc
 }
 
@@ -406,7 +417,7 @@ test_database_restart() {
 	admin "set server_login_retry=1"
 
 	psql p0 -c "select now() as p0_before_restart"
-	pgctl -m fast restart
+	gpstop -ar
 	echo `date` restart 1
 	psql p0 -c "select now() as p0_after_restart" || return 1
 
@@ -417,7 +428,7 @@ test_database_restart() {
 		psql p1 -c "select pg_sleep($i)" &
 	done
 
-	pgctl -m fast restart
+	gpstop -ar
 	echo `date` restart 2
 
 	wait
