@@ -4,8 +4,11 @@
 # - uses iptables and -F with some tests, probably not very friendly to your firewall
 
 cd $(dirname $0)
-
-export PATH=/usr/lib/postgresql/9.4/bin:$PATH
+LC_ALL="en_US.UTF-8"
+LC_CTYPE="en_US.UTF-8"
+export PGCLIENTENCODING=UTF8
+export LD_LIBRARY_PATH=/usr/local/pgsql/lib:$LD_LIBRARY_PATH
+export PATH=/usr/local/pgsql/bin:$PATH
 export PGDATA=$PWD/pgdata
 export PGHOST=localhost
 export PGPORT=6667
@@ -236,7 +239,7 @@ test_server_connect_timeout_establish() {
 	admin "set server_connect_timeout=2"
 	psql -c "select now()" p2
 	# client will always see query_timeout, need to grep for connect timeout
-	grep "closing because: connect timeout" $BOUNCER_LOG 
+	grep "closing because: connect failed" $BOUNCER_LOG
 	rc=$?
 	# didnt seem to die otherwise
 	killall nc
@@ -423,7 +426,6 @@ test_database_restart() {
 
 # test connect string change
 test_database_change() {
-	admin "set server_lifetime=2"
 
 	db1=`psql -tAq p1 -c "select current_database()"`
 
