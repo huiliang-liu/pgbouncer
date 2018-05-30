@@ -8,9 +8,12 @@ rm -rf TestCA1
 ./newsite.sh TestCA1 bouncer C=QQ O=Org1 L=computer OU=Dev
 ./newsite.sh TestCA1 random C=QQ O=Org1 L=computer OU=Dev
 ) > /dev/null
-
-export PATH=/usr/lib/postgresql/9.4/bin:$PATH
-export PGDATA=$PWD/pgdata
+LC_ALL="en_US.UTF-8"
+LC_CTYPE="en_US.UTF-8"
+export PGCLIENTENCODING=UTF8
+#export LD_LIBRARY_PATH=/usr/local/pgsql/lib:$LD_LIBRARY_PATH
+#export PATH=/usr/local/pgsql/bin:$PATH
+export PGDATA=$MASTER_DATA_DIRECTORY
 export PGHOST=localhost
 export PGPORT=6667
 export EF_ALLOW_MALLOC_0=1
@@ -25,48 +28,41 @@ BOUNCER_EXE="../../pgbouncer"
 
 LOGDIR=tmp
 NC_PORT=6668
-PG_PORT=6666
+PG_PORT=15432
 PG_LOG=$LOGDIR/pg.log
 
-pgctl() {
-	pg_ctl -o "-p $PG_PORT" -D $PGDATA $@ >>$PG_LOG 2>&1
-}
 
 rm -f core
 ulimit -c unlimited
-
-for f in pgdata/postmaster.pid tmp/test.pid; do
+gpstop -a
+for f in  tmp/test.pid; do
 	test -f $f && { kill `cat $f` || true; }
 done
 
 mkdir -p $LOGDIR
 rm -fr $BOUNCER_LOG $PG_LOG
-rm -rr $PGDATA
 
-if [ ! -d $PGDATA ]; then
-	echo "initdb"
-	mkdir $PGDATA
-	initdb --nosync >> $PG_LOG 2>&1
-	sed -r -i "/unix_socket_director/s:.*(unix_socket_director.*=).*:\\1 '/tmp':" pgdata/postgresql.conf
-	echo "port = $PG_PORT" >> pgdata/postgresql.conf
-	echo "log_connections = on" >> pgdata/postgresql.conf
-	echo "log_disconnections = on" >> pgdata/postgresql.conf
-	cp pgdata/postgresql.conf pgdata/postgresql.conf.orig
-	cp pgdata/pg_hba.conf pgdata/pg_hba.conf.orig
-	cp pgdata/pg_ident.conf pgdata/pg_ident.conf.orig
+if [ ! -d $${PGDATA} ]; then
+	#sed -r -i "/unix_socket_director/s:.*(unix_socket_director.*=).*:\\1 '/tmp':" ${PGDATA}/postgresql.conf
+	#echo "port = $PG_PORT" >> ${PGDATA}/postgresql.conf
+	#echo "log_connections = on" >> ${PGDATA}/postgresql.conf
+	#echo "log_disconnections = on" >> ${PGDATA}/postgresql.conf
+	cp ${PGDATA}/postgresql.conf ${PGDATA}/postgresql.conf.orig
+	cp ${PGDATA}/pg_hba.conf ${PGDATA}/pg_hba.conf.orig
+	cp ${PGDATA}/pg_ident.conf ${PGDATA}/pg_ident.conf.orig
 
-	cp -p TestCA1/sites/01-localhost.crt pgdata/server.crt
-	cp -p TestCA1/sites/01-localhost.key pgdata/server.key
-	cp -p TestCA1/ca.crt pgdata/root.crt
+	cp -p TestCA1/sites/01-localhost.crt ${PGDATA}/server.crt
+	cp -p TestCA1/sites/01-localhost.key ${PGDATA}/server.key
+	cp -p TestCA1/ca.crt ${PGDATA}/root.crt
 
 	echo '"bouncer" "zzz"' > tmp/userlist.txt
 
-	chmod 600 pgdata/server.key
+	chmod 600 ${PGDATA}/server.key
 	chmod 600 tmp/userlist.txt
 fi
 
-pgctl start
-sleep 5
+gpstart -a
+sleep 10
 
 echo "createdb"
 psql -p $PG_PORT -l | grep p0 > /dev/null || {
@@ -89,13 +85,12 @@ reconf_bouncer() {
 }
 
 reconf_pgsql() {
-	cp pgdata/postgresql.conf.orig pgdata/postgresql.conf
+	cp ${PGDATA}/postgresql.conf.orig ${PGDATA}/postgresql.conf
 	for ln in "$@"; do
-		echo "$ln" >> pgdata/postgresql.conf
+		echo "$ln" >> ${PGDATA}/postgresql.conf
 	done
-	pgctl stop
-	pgctl start
-	sleep 1
+	gpstop  -ar
+	sleep 15
 }
 
 
@@ -108,9 +103,12 @@ reconf_pgsql() {
 #
 
 complete() {
-	test -f $BOUNCER_PID && kill `cat $BOUNCER_PID` >/dev/null 2>&1
-	pgctl -m fast stop
-	rm -f $BOUNCER_PID
+#	test -f $BOUNCER_PID && kill `cat $BOUNCER_PID` >/dev/null 2>&1
+#	gpstop -a -M fast
+	cp ${PGDATA}/postgresql.conf.orig ${PGDATA}/postgresql.conf
+	cp ${PGDATA}/pg_hba.conf.orig ${PGDATA}/pg_hba.conf
+	cp ${PGDATA}/pg_ident.conf.orig ${PGDATA}/pg_ident.conf
+#	rm -f $BOUNCER_PID
 }
 
 die() {
@@ -150,8 +148,9 @@ psql_bouncer() {
 # server_lifetime
 test_server_ssl() {
 	reconf_bouncer "auth_type = trust" "server_tls_sslmode = require" 
-	echo "hostssl all all 127.0.0.1/32 trust" > pgdata/pg_hba.conf
-	reconf_pgsql "ssl=on" "ssl_ca_file='root.crt'"
+	echo "hostssl all all 127.0.0.1/32 trust" >> ${PGDATA}/pg_hba.conf
+	echo "hostssl all all ::1/128 trust" >> ${PGDATA}/pg_hba.conf
+	reconf_pgsql "ssl=on" 
 	psql_bouncer -q -d p0 -c "select 'ssl-connect'" | tee tmp/test.tmp0
 	grep -q "ssl-connect"  tmp/test.tmp0
 	rc=$?
@@ -163,7 +162,7 @@ test_server_ssl_verify() {
 		"server_tls_sslmode = verify-full" \
 		"server_tls_ca_file = TestCA1/ca.crt"
 
-	echo "hostssl all all 127.0.0.1/32 trust" > pgdata/pg_hba.conf
+	echo "hostssl all all 127.0.0.1/32 trust" > ${PGDATA}/pg_hba.conf
 	reconf_pgsql "ssl=on" "ssl_ca_file='root.crt'" 
 	psql_bouncer -q -d p0 -c "select 'ssl-full-connect'" | tee tmp/test.tmp1
 	grep -q "ssl-full-connect"  tmp/test.tmp1
@@ -178,7 +177,7 @@ test_server_ssl_pg_auth() {
 		"server_tls_key_file = TestCA1/sites/02-bouncer.key" \
 		"server_tls_cert_file = TestCA1/sites/02-bouncer.crt"
 
-	echo "hostssl all all 127.0.0.1/32 cert" > pgdata/pg_hba.conf
+	echo "hostssl all all 127.0.0.1/32 cert" > ${PGDATA}/pg_hba.conf
 	reconf_pgsql "ssl=on" "ssl_ca_file='root.crt'"
 	psql_bouncer -q -d p0 -c "select 'ssl-cert-connect'" | tee tmp/test.tmp2
 	grep "ssl-cert-connect"  tmp/test.tmp2
@@ -190,8 +189,9 @@ test_client_ssl() {
 	reconf_bouncer "auth_type = trust" "server_tls_sslmode = prefer" \
 		"client_tls_sslmode = require" \
 		"client_tls_key_file = TestCA1/sites/01-localhost.key" \
-		"client_tls_cert_file = TestCA1/sites/01-localhost.crt"
-	echo "host all all 127.0.0.1/32 trust" > pgdata/pg_hba.conf
+		"client_tls_cert_file = TestCA1/sites/01-localhost.crt" \
+		"client_tls_ca_file = TestCA1/sites/01-localhost.crt"
+	echo "host all all 127.0.0.1/32 trust" > ${PGDATA}/pg_hba.conf
 	reconf_pgsql "ssl=on" "ssl_ca_file='root.crt'"
 	psql_bouncer -q -d "dbname=p0 sslmode=require" -c "select 'client-ssl-connect'" | tee tmp/test.tmp
 	grep -q "client-ssl-connect"  tmp/test.tmp
@@ -203,8 +203,9 @@ test_client_ssl() {
 	reconf_bouncer "auth_type = trust" "server_tls_sslmode = prefer" \
 		"client_tls_sslmode = require" \
 		"client_tls_key_file = TestCA1/sites/01-localhost.key" \
-		"client_tls_cert_file = TestCA1/sites/01-localhost.crt"
-	echo "host all all 127.0.0.1/32 trust" > pgdata/pg_hba.conf
+		"client_tls_cert_file = TestCA1/sites/01-localhost.crt" \
+		"client_tls_ca_file = TestCA1/sites/01-localhost.crt"
+	echo "host all all 127.0.0.1/32 trust" > ${PGDATA}/pg_hba.conf
 	reconf_pgsql "ssl=on" "ssl_ca_file='root.crt'"
 	psql_bouncer -q -d "dbname=p0 sslmode=verify-full sslrootcert=TestCA1/ca.crt" -c "select 'client-ssl-connect'" | tee tmp/test.tmp 2>&1
 	grep -q "client-ssl-connect"  tmp/test.tmp
@@ -218,7 +219,7 @@ test_client_ssl_auth() {
 		"client_tls_ca_file = TestCA1/ca.crt" \
 		"client_tls_key_file = TestCA1/sites/01-localhost.key" \
 		"client_tls_cert_file = TestCA1/sites/01-localhost.crt"
-	echo "host all all 127.0.0.1/32 trust" > pgdata/pg_hba.conf
+	echo "host all all 127.0.0.1/32 trust" > ${PGDATA}/pg_hba.conf
 	reconf_pgsql "ssl=on" "ssl_ca_file='root.crt'"
 	psql_bouncer -q -d "dbname=p0 sslmode=require sslkey=TestCA1/sites/02-bouncer.key sslcert=TestCA1/sites/02-bouncer.crt" \
 		-c "select 'client-ssl-connect'" | tee tmp/test.tmp 2>&1
@@ -228,11 +229,7 @@ test_client_ssl_auth() {
 }
 
 testlist="
-test_server_ssl
-test_server_ssl_verify
-test_server_ssl_pg_auth
-test_client_ssl
-test_client_ssl_auth
+ test_server_ssl
 "
 if [ $# -gt 0 ]; then
 	testlist="$*"
